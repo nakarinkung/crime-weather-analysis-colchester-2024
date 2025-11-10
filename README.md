@@ -47,6 +47,7 @@ This analysis examines:
 
 **Prerequisites**
 R (version 4.0+ recommended)
+
 RStudio
 
 ---
