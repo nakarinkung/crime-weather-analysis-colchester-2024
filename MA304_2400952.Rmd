@@ -1,0 +1,653 @@
+---
+title: "Analysis of Crime and Weather Influence in Colchester (2024)"
+author: "Nakarin Kungvalchokchai (2400952)"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cerulean
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6
+  )
+```
+
+# Introduction
+
+  The report will analyse crime patterns in Colchester during 2024 and explore potential relationships between criminal activity and weather conditions. By combining police crime data with meteorological measurements, we aim to discover patterns, trends, and insights that might inform policing strategies and community safety measures.
+
+```{r load-libraries}
+# Data manipulation and visualization
+library(tidyverse)
+library(lubridate)
+#install.packages("leaflet")
+library(leaflet)
+library(corrplot)
+library(viridis)
+library(kableExtra)
+library(ggplot2)
+library(dplyr)
+#install.packages("xts")
+library(xts)
+library(plotly)
+```
+
+```{r load-data, include=FALSE}
+# Load datasets
+crime_dt <- read.csv("crime24.csv", stringsAsFactors = FALSE)
+temp_dt <- read.csv("temp24.csv", stringsAsFactors = FALSE)
+
+# Preview datasets
+head(crime_dt)
+head(temp_dt)
+```
+
+```{r data-cleaning}
+# Clean crime data and convert date
+crime_clean_dt <- crime_dt %>%
+  mutate(
+    date = ym(date),
+    month = month(date, label = TRUE),
+    season = case_when(
+      month %in% c("Dec", "Jan", "Feb") ~ "Winter",
+      month %in% c("Mar", "Apr", "May") ~ "Spring",
+      month %in% c("Jun", "Jul", "Aug") ~ "Summer",
+      month %in% c("Sep", "Oct", "Nov") ~ "Autumn"
+    )
+  ) %>%filter(!is.na(lat) & !is.na(long)) # Remove rows with missing coordinates
+
+# Clean temperature data and convert date
+temp_clean_dt <- temp_dt %>%
+  mutate(
+    Date = ymd(Date),
+    month = month(Date, label = TRUE),
+    season = case_when(
+      month %in% c("Dec", "Jan", "Feb") ~ "Winter",
+      month %in% c("Mar", "Apr", "May") ~ "Spring",
+      month %in% c("Jun", "Jul", "Aug") ~ "Summer",
+      month %in% c("Sep", "Oct", "Nov") ~ "Autumn"
+    )
+  )
+
+# Aggregate temperature data by month for joining with crime data
+temp_monthly <- temp_clean_dt %>%
+  group_by(month = floor_date(Date, "month")) %>%
+  summarise(
+    avg_temp = mean(TemperatureCAvg, na.rm = TRUE),
+    max_temp = max(TemperatureCMax, na.rm = TRUE),
+    min_temp = min(TemperatureCMin, na.rm = TRUE),
+    avg_wind = mean(WindkmhInt, na.rm = TRUE),
+    total_precip = sum(Precmm, na.rm = TRUE),
+    avg_humidity = mean(HrAvg, na.rm = TRUE),
+    sunshine_hours = sum(as.numeric(SunD1h), na.rm = TRUE)
+  ) %>%
+  mutate(month_label = format(month, "%b"))
+
+# Create a monthly crime count dataset
+crime_monthly <- crime_clean_dt %>%
+  mutate(month = floor_date(date, "month")) %>%
+  group_by(month, category) %>%
+  summarise(count = n()) %>%
+  ungroup()
+
+# Join crime and weather data by month
+crime_weather_monthly <- crime_monthly %>%
+  group_by(month) %>%
+  summarise(total_crimes = sum(count)) %>%
+  left_join(temp_monthly, by = "month")
+```
+
+# Exploratory Data Analysis
+
+## Summary Tables
+
+### Table 1: Crime Categories Overview in Colchester (2024)
+
+```{r table-crime-categories}
+# Table of crime categories and their frequencies
+crime_table <- table(crime_dt$category) 
+crime_table <- addmargins(crime_table)
+rownames(crime_table)[15] = "Total"
+names(dimnames(crime_table)) = c("Category")
+kable(crime_table, caption = "Crime Categories and Their Frequencies") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+  The table displays various crime categories alongside their frequencies, which reveal significant differences in their prevalence. Violent crime was the most frequent, with 2,420 incidents, followed by anti-social behaviour, which had only 710 cases. Shoplifting ranked third with 629 occurrences, whereas criminal damage and arson accounted for 479 incidents. Public-order offences (458) and other theft (412) also featured prominently, though they were less common than violent crime. Vehicle crime (270) and drug-related offences (265) showed moderate frequencies.
+
+  In contrast, burglary (171) and bicycle theft (149) were relatively less frequent. Other crime (100), theft from the person (91), and robbery (85) were even less common, and possession of weapons was the least reported at just 65 cases.
+
+  Overall, the data suggests that violent crime and anti-social behaviour are the most significant concerns, whereas weapon possession and robbery occur far less frequently. Consequently, this distribution can help law enforcement prioritise resources toward the most prevalent offences.
+
+### Two-way Table 2: Crime Categories in Colchester (2024) by Month
+
+```{r two-way-table}
+# Two-way table 2: Crime categories by month
+crime_month_table <- table(crime_clean_dt$category, crime_clean_dt$month)
+crime_month_table <- addmargins(crime_month_table)
+colnames(crime_month_table)[13] = "Total"
+rownames(crime_month_table)[15] = "Total"
+kable(crime_month_table, caption = "Crime Categories in Colchester (2024) by Month") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), 
+                full_width = F) %>%
+  scroll_box(width = "100%")
+```
+
+  The table presents a detailed monthly breakdown of crime incidents across 14 categories, along with their annual totals. While violent crime was the most prevalent category every month (peaking in July at 242 incidents and totalling 2,420 annually), other crimes showed distinct seasonal patterns. Anti-social behaviour followed as the second most common crime, with a noticeable surge in May (80 incidents) but decreasing in winter months. Shoplifting, the third highest category (629 annual cases), not only remained consistently high but also spiked in November (74 incidents) and December (61), most likely due to holiday shopping.
+
+  In contrast, bicycle theft saw a sharp November rise (29 cases), while burglary peaked in the same month (25 incidents), suggesting colder months may increase certain thefts. Interestingly, vehicle crime spiked dramatically in July (41) and August (52), possibly linked to summer travel, whereas public-order offences peaked in August (53). Meanwhile, drug-related incidents dropped sharply in May (12) but rebounded in December (34).
+
+  Overall, violent crime dominates year-round, but seasonal trends emerge: theft-related crimes (shoplifting, burglary, and bicycle theft) increase in late autumn/winter, while vehicle crime and public-order offences rise in summer. This data could help law enforcement allocate resources more strategically, not only addressing persistent violent crime but also targeting seasonal spikes in other categories.
+
+## Data Visualization
+
+### Pie Chart: Proportion of Crime Categories in Colchester (2024)
+
+```{r pie-chart}
+# Calculate crime_summary
+crime_summary <- crime_clean_dt %>%
+  group_by(category) %>%
+  summarise(
+    count = n(),
+    percentage = n() / nrow(crime_clean_dt) * 100
+  ) %>%
+  arrange(desc(count))
+
+# Calculate label positions 
+pie_data <- crime_summary %>%
+  mutate(category = ifelse(percentage < 2, "Other", category)) %>%
+  group_by(category) %>%
+  summarise(count = sum(count)) %>%
+  arrange(desc(count)) %>%
+  mutate(
+    percentage = count / sum(count) * 100,
+    cum_pct = cumsum(percentage),
+    ypos = 100 - (cum_pct - percentage/2)
+  )
+total_crimes=sum(crime_summary$count)
+# Create the pie chart with perfect label placement
+pc <- ggplot(pie_data, aes(x = "", y = percentage, fill = reorder(category, -percentage))) +
+  geom_col(width = 1, color = "black") +
+  coord_polar("y", start = 0) +
+  # Manually position labels
+  geom_text(
+    aes(label = ifelse(percentage >= 2, paste0(round(percentage, 1), "%"), ""),
+        y = percentage,
+        x = 1.6),  # Adjust x to move labels inward/outward
+    position = position_stack(vjust = 0.5),
+    size = 3,
+    color = "black"
+  ) +
+  scale_fill_brewer(palette = "Set3") +
+  labs(
+    title = "Proportion of Crime Categories in Colchester (2024)",
+    subtitle = paste("Total reported crimes:", format(total_crimes, big.mark = ",")),
+    fill = "Crime Category",
+    caption = "'Other' contains categories with <2% share each"
+  )+
+  theme_void()+
+    theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray40"),
+    legend.position = "right"
+  )
+
+pc
+```
+
+  The pie chart depicts the proportion of reported crimes across key categories. Violent crime dominated, accounting for 38.4% of all crimes, or more than one-third of the total, demonstrating its extreme frequency. Anti-social behaviour came second at 11.3%, followed by shoplifting (10%), criminal damage-arson (7.6%), and public order (7.3%).
+
+  Additionally, less frequent categories such as other theft (6.5%), vehicle crime (4.3%), and drugs (4.2%) each represented smaller but still significant shares. On the other hand, burglary (2.7%) and bicycle theft (2.4%) were comparatively minor, with remaining categories (e.g., robbery, weapons possession) grouped into "Other" due to individual shares below 2%.
+
+  In conclusion, the results indicate that violent crime is Colchester's most critical issue, requiring priority response. Meanwhile, antisocial behaviour and property-related crimes (shoplifting, burglary, and vehicle crime) account for a significant part, indicating an importance for targeted solutions. This breakdown could guide resource allocation, emphasising violent crime reduction while tackling secondary issues such as theft and public order.
+
+### Bar Plot: Top 5 Crime Categories in Colchester (2024)
+
+```{r bar-plot-top_5_crime}
+# Create bar plot for top 5 crime categories
+top_crimes <- crime_summary %>% 
+  top_n(5, count)
+
+bp5 <- ggplot(top_crimes, aes(x = reorder(category, count), y = count, fill = count)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_viridis( option = "G") +
+  labs(
+    title = "Top 5 Crime Categories in Colchester (2024)",
+    x = "Crime Category",
+    y = "Number of Incidents",
+    fill = "Count"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.text = element_text(size = 10)
+  )
+
+bp5
+```
+
+  When analysing crime trends, it is important to focus on the top five most common crimes, which account for over 80% of all recorded events, which emphasise their overwhelming impact on public safety.
+
+  The bar chart shows an obvious structure of criminal activity, with violent crime showing as the most serious concern by far, with over 2,000 incidences, nearly doubling the next category. Anti-social behaviour was the second most common crime, accounting for roughly 700 cases, while shoplifting came third with approximately 600 incidents, highlighting the ongoing issues in retail security. While criminal damage/arson and public-order violations were less common (approximately 500 cases each), they still contributed considerably to overall crime count.
+
+### Bar Plot: Seasonal Patterns in Top 5 Crime Categories in Colchester (2024)
+
+```{r seasonal-crime-analysis}
+# First, get list of month-year combinations in chronological order
+season_order <- c(  "Winter","Spring","Summer","Autumn"  )
+# Analyse crime by season
+season_analysis <- crime_clean_dt %>%
+  group_by(season, category) %>%
+  summarise(count = n()) %>%
+  ungroup() %>%
+  group_by(season) %>%
+  mutate(
+    season_total = sum(count),
+  ) %>%
+  arrange(factor(season, levels = season_order))
+
+# Create seasonal crime plot
+seasonal_crime_plot <- ggplot(
+  season_analysis %>% filter(category %in% top_crimes$category[1:5]),
+  aes(x = factor(season, levels = season_order), y = count, fill = category)
+) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_brewer(palette = "Set3") +
+  labs(
+    title = "Seasonal Patterns in Top 5 Crime Categories in Colchester (2024)",
+    x = "Season",
+    y = "Number of Crimes",
+    fill = "Crime Category"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0))
+
+seasonal_crime_plot
+```
+
+  After identifying the top five most prevalent crimes, which collectively account for nearly 80% of incidents, it is essential to investigate their seasonal trends to uncover patterns that could inform targeted prevention strategies.
+
+  The bar chart illustrates seasonal trends in crime count across winter, spring, summer, and autumn, focusing on five key categories. While violent crime was the most prevalent in all seasons, it peaked sharply in winter with over 640 incidents, whereas summer and autumn showed slightly lower but still substantial numbers. Anti-social behaviour followed as the second most common crime, though its frequency varied significantly by season. Not only did it surge in spring (exceeding 200 cases), but it also dropped to its lowest level in winter.
+
+  Shoplifting, on the other hand, remained relatively stable all year round, but it rose significantly in autumn, making it the second most frequent crime during that season. In contrast, criminal damage/arson and public order offences consistently recorded lower numbers (generally under 150 incidents), although public order offences saw a minor increase in summer.
+
+  Overall, the data reveals that violent crime dominates persistently across all seasons, while other offences exhibit more obvious seasonal fluctuations, for instance, antisocial behaviour’s spring peak and shoplifting’s autumn rise. Therefore, these trends could guide law enforcement strategies, not only emphasising year-round measures for violent crime but also implementing targeted seasonal interventions for other categories.
+
+### Weather Conditions Analysis
+
+  Analysing weather conditions such as temperature and wind speed is crucial because it can reveal important patterns and correlations. For example, high temperatures may be linked to increased violent crime, while strong winds could hinder outdoor criminal activity. Seasonal shifts in weather often influence when, where, and how crimes occur, allowing law enforcement to allocate resources more effectively to prevent and respond to incidents.
+
+### Time Series Plot: Daily Average Temperature in Colchester (2024)
+
+```{r time-series 1}
+# Select relevant columns
+temp_daily <- temp_clean_dt %>%
+  select(Date, TemperatureCAvg)
+
+# Convert to xts object
+temp_xts <- xts(temp_daily$TemperatureCAvg, order.by = temp_daily$Date)
+
+plot(temp_xts, 
+     main = "Daily Average Temperature in Colchester (2024)",
+     ylab = "Temperature (°C)",
+     xlab = "Date",
+     col = "firebrick",
+     major.ticks = "months",
+     grid.ticks.on = "months")
+```
+
+  The chart shows clear seasonal trends, with temperatures rising from winter to summer before declining again toward year-end. In January, the average was low, likely around -2-9°C, reflecting typical winter cold, but by March, temperatures began climbing as spring arrived. May saw milder averages, possibly 10-15°C, and by August, peak summer heat pushed temperatures to their highest, likely 22-23°C.
+
+  As autumn approached in September, averages dropped gradually but remained warmer than spring. By November, cooler conditions returned, although not as harsh as January. The year ended on December 31 with winter temperatures settling back near freezing.
+
+  Overall, the trend follows expected seasonal patterns, but subtle fluctuations such as an unusually warm spring or a mild early winter could indicate shifting weather norms. This data could help correlate temperature changes with other trends, such as crime spikes or retail activity, since weather often influences human behaviour.
+
+### Histogram and Density Plot: Average Daily Temperature Distribution
+
+```{r histogram-density}
+# Histogram of daily temperatures
+h1 <- ggplot(temp_clean_dt, aes(x = TemperatureCAvg)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "lightblue", color = "darkblue", alpha = 0.7) +
+  geom_density(color = "firebrick", linewidth = 1) +
+  labs(
+    title = "Distribution of Average Daily Temperatures in Colchester (2024)",
+    x = "Average Temperature (°C)",
+    y = "Density"
+  ) +
+  theme_minimal()
+h1
+```
+
+  The histogram shows the distribution of average daily temperatures in Colchester in the year 2024. The data appears to have an approximately normal distribution, although slightly skewed to the left. The majority of the temperatures ranged between 5°C and 15°C, indicating that Colchester gets warm weather for most of the year. The highest density fluctuated around 12°C, indicating that this is the most common average daily temperature. Colder temperatures below 5°C and warmer ones beyond 20°C were possible, although they were significantly less often. Furthermore, the smooth red curve shows a kernel density estimate, which further highlights the overall shape of the distribution and supports the observation that extreme temperatures are rare.
+
+  As a result, we can conclude that Colchester's climate in 2024 was relatively moderate, with a preference for mild days, while considerable changes occurred over the year.
+
+### Box Plot: Temperature Distribution in Colchester (2024) by Month
+
+```{r boxplot temp}
+bp_temp <- ggplot(temp_clean_dt, aes(x = month, y = TemperatureCAvg,fill = month)) +
+  geom_boxplot() +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  theme(legend.position = "none")+
+  labs(title = "Temperature Distribution in Colchester (2024) by Month", x = "Month", y = "Temperature (°C)")
+
+# Convert to interactive plotly
+bp_temp <- bp_temp + guides(color=FALSE)  # remove legend on Color
+ggplotly(bp_temp, height=400, width=600)
+```
+
+  The Temperature Distribution by Month boxplot reveals key seasonal patterns and variability in Colchester's 2024 climate. January and December showed the coldest and most consistent temperatures (likely 2-7°C), while July and August displayed the highest median values (peaking around 20°C) with wider ranges, indicating occasional heatwaves.
+
+  Spring (March-May) and autumn (September-November) exhibited gradual transitions, but May's narrower interquartile range suggested more stable weather compared to September’s erratic swings. Interestingly, June had a high upper whisker, hinting at early summer spikes, whereas February’s compact box reflected winter’s stubborn chill.
+
+  While median temperatures were consistent with predictions, outliers such as a cold May morning revealed unusual patterns that could disrupt crime trends or retail traffic. This detail helps pinpoint not only averages but also volatility, which is crucial for connecting weather with social patterns.
+
+### Box Plot: Wind Speed Distribution in Colchester (2024) by Month
+
+```{r boxplot wind speed}
+bp_wsp <- ggplot(temp_clean_dt, aes(x = month, y = WindkmhInt,fill = month)) +
+  geom_boxplot() +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  theme(legend.position = "none")+
+  labs(title = "Wind Speed Distribution in Colchester (2024) by Month", x = "Month", y = "Wind Speed (km/h)")
+
+# Convert to interactive plotly
+bp_wsp <- bp_wsp + guides(color=FALSE)  # remove legend on Color
+ggplotly(bp_wsp, height=400, width=600)
+```
+
+  The chart displays the monthly distribution of wind speeds in Colchester throughout 2024. December had the widest range and highest peak, reaching over 40 km/h, while April and January also experienced relatively high speeds and variability. In contrast, July and October had lower medians and narrower ranges, indicating calmer conditions. Although some months, such as March and November, had several outliers, their overall wind speed was moderate. Wind speeds generally trend higher in the winter months and lower in summer, suggesting a seasonal pattern. Therefore, while wind can occur year-round, it tends to be stronger and more variable in colder months.
+
+### Correlation Analysis: Weather Conditions and Crime levels
+
+  After investigating average temperature trends, we will investigate the correlation between weather conditions and crime count, as temperature alone cannot give the whole narrative. While heatwaves may indicate greater violent crime, other elements such as humidity, wind, and precipitation can either increase or reduce criminal activity, which highlights the complex environmental triggers that set urban safety concerns.
+
+```{r correlation-analysis}
+# Create subset of data for pair plot
+pairs_data <- crime_weather_monthly %>%
+  select(total_crimes, avg_temp, avg_humidity, total_precip, sunshine_hours, avg_wind)
+
+# Create correlation matrix
+cor_matrix <- cor(pairs_data, use = "complete.obs")
+
+# Plot correlation matrix
+corrplot(cor_matrix, method = "color", type = "upper", 
+         tl.col = "black", tl.srt = 45, addCoef.col = "black",
+         title = "Correlation Between Weather Variables and Crime Count",
+         mar = c(0, 0, 2, 0))
+```
+
+  This correlation matrix reveals complicated weather-crime connections in Colchester. Total crimes had a moderate positive association with temperature (r=0.42) and a greater correlation with precipitation (r=0.58), indicating that rainy days may increase criminal activity more than heat alone. In contrast, humidity has almost little relationship with total crime (r=-0.08). Interestingly, wind speed emerged as a protective factor (r=-0.45), possibly disrupting criminal opportunities, while sunshine hours showed a surprisingly weak crime association (r=0.23) despite their temperature linkage.
+
+  The results show that: 1) precipitation and temperature both increase crime risks; 2) humidity mitigates temperature effects; and 3) wind independently deters offences. These interdependencies might explain why summer months see crime peaks due to heat and precipitation while windy autumn days show reduced activity.
+
+### Scatter Plot: Temperature vs. Crime Count
+
+```{r scatter-plot 1}
+# Create scatter plot
+sp_1 <- ggplot(crime_weather_monthly, aes(x = avg_temp, y = total_crimes)) +
+  geom_point(size = 3,aes(color = month_label)) +
+  geom_smooth(method = "loess", color = "firebrick",se = FALSE) +
+  labs(
+    title = "Relationship Between Average Temperature and Total Crimes",
+    x = "Average Temperature (°C)",
+    y = "Total Number of Crimes",
+    size = "Precipitation (mm)",
+    color = "Month"
+  ) +
+  geom_text(
+    label=crime_weather_monthly$month_label, 
+    nudge_x = 0.75, nudge_y = 0.75, 
+    check_overlap = T
+  )+
+  theme_minimal()
+
+sp_1 <- sp_1 + guides(color=FALSE)  # remove legend on Color
+ggplotly(sp_1, height=400, width=600)
+```
+
+  The chart illustrates the relationship between average temperature and total crimes across different months. While there is no strict linear pattern, it suggests that crime tends to increase slightly as temperatures rise. For instance, July had both a high average temperature and the highest crime count. Conversely, colder months such as December and March showed lower crime levels, although February was an exception with relatively high crime. The trendline indicates a gradual increase in crime with temperature, yet it also fluctuates, showing that other factors might influence crime count. Therefore, temperature may affect crime, but it is not the only factor.
+
+### Scatter Plot: Precipitation vs. Crime Count
+
+```{r scatter-plot 2}
+# Create scatter plot
+sp2 <- ggplot(crime_weather_monthly, aes(x = total_precip, y = total_crimes)) +
+  geom_point(size = 3,aes(color = month_label)) +
+  geom_smooth(method = "loess", color = "firebrick",se = FALSE) +
+  labs(
+    title = "Relationship Between Total Precipitation and Total Crimes",
+    x = "Total Precipitation (mm)",
+    y = "Total Number of Crimes",
+    color = "Month"
+  ) +
+  geom_text(
+    label=crime_weather_monthly$month_label, 
+    nudge_x = 2, nudge_y = 2, 
+    check_overlap = T
+  )+
+  theme_minimal()
+
+sp2 <- sp2 + guides(color=FALSE)  # remove legend on Color
+ggplotly(sp2, height=400, width=600)
+```
+
+  The chart illustrates the relationship between total precipitation and the number of crimes reported each month in Colchester. It suggests a non-linear pattern, as shown by the smoothed curve. Interestingly, crime numbers peaked in July, which also saw high precipitation levels of around 75 mm. Similarly, May, with about 80 mm of rainfall, also showed a high number of crimes. In contrast, months such as April and December, which had moderate rainfall (around 55 mm and 40 mm, respectively), experienced fewer crimes.
+
+  Although higher precipitation sometimes corresponds with higher crime count, this relationship is not consistent. For example, February showed relatively high crime despite having the highest precipitation level, whereas August had the lowest rainfall but moderate crime. Therefore, while there is some indication that wetter months may coincide with more crime, other factors likely influence crime levels as well.
+
+### Scatter Plot: Wind speed vs. Crime Count
+
+```{r scatter-plot 3}
+# Create scatter plot
+sp3 <- ggplot(crime_weather_monthly, aes(x = avg_wind, y = total_crimes)) +
+  geom_point(size = 3,aes(color = month_label)) +
+  geom_smooth(method = "loess", color = "firebrick",se = FALSE) +
+  labs(
+    title = "Relationship Between Average Wind Speed and Total Crimes",
+    x = "Average Wind Speed (km/h)",
+    y = "Total Number of Crimes",
+    color = "Month"
+  ) +
+  geom_text(
+    label=crime_weather_monthly$month_label, 
+    nudge_x = 0.25, nudge_y = 0.25, 
+    check_overlap = T
+  )+
+  theme_minimal()
+
+sp3 <- sp3 + guides(color=FALSE)  # remove legend on Color
+ggplotly(sp3, height=400, width=600)
+```
+
+  The chart illustrates the relationship between average wind speed and total crimes each month. In general, when wind speed increases, the number of crimes decreases, although not perfectly. For example, July had the highest crime count and one of the lowest wind speeds, whereas April had both a high wind speed and the lowest crime count. However, despite high wind speeds in February and January, crime count remained slightly high. This suggests that while stronger winds may slightly reduce crime, other factors are also likely to influence crime count, and the relationship is not exactly linear.
+
+### Interactive Time Series Plot: Monthly Crime Trends in Colchester (2024)
+
+```{r time-series 2}
+# Monthly crime trend
+ts2 <- ggplot(crime_weather_monthly, aes(x = month, y = total_crimes)) +
+  geom_line(color = "firebrick", linewidth = 1) +
+  geom_point(aes(color = avg_temp), size = 3) +
+  scale_color_viridis_c(option = "plasma") +
+  labs(
+    title = "Monthly Crime Trends in Colchester (2024)",
+    x = "Month",
+    y = "Number of Crimes",
+    color = "Avg Temp (°C)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Convert to interactive plotly
+ggplotly(ts2, height=400, width=600)
+```
+
+  The chart shows monthly crime trends in Colchester for 2024, with data points coloured by average temperature. Crime peaked in July with over 600 incidents, which also coincided with high temperatures. Conversely, the lowest number of crimes occurred in April, despite moderate temperatures.
+
+  Although there were fluctuations throughout the year, warmer months such as May and August also saw relatively high crime counts. Cooler months such as January and December had fewer crimes. Therefore, while the trend is not perfectly linear, there appears to be a slight increase in crime during warmer months, suggesting a potential connection between temperature and crime levels.
+
+### Smoothed Time Series: Crime Trends by Top 5 Categories Over Time
+
+```{r smoothed-time-series}
+# Prepare data for smoothed time series
+crimes_by_category_month <- crime_clean_dt %>%
+  group_by(category, date = floor_date(date, "month")) %>%
+  summarise(count = n()) %>%
+  ungroup() %>%
+  filter(category %in% top_crimes$category[1:5])
+
+# Create smoothed time series plot
+sts <- ggplot(crimes_by_category_month, aes(x = date, y = count, color = category)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "loess", se = FALSE, span = 0.5) +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    title = "Crime Trends by Top 5 Categories Over Time",
+    subtitle = "With Smoothed Trend Lines",
+    x = "Month",
+    y = "Number of Incidents",
+    color = "Crime Category"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+sts
+```
+
+  The chart illustrates monthly crime trends in Colchester for 2024, broken down by the top five categories with smoothed trend lines. Violent crime consistently had the highest number of incidents, peaking mid-year and remaining above other categories throughout the year. Anti-social behaviour showed an increase in the early months, peaking around May, but declined gradually toward the year’s end. Meanwhile, shoplifting remained relatively stable until August, after which it rose significantly, becoming the second most common crime by December.
+
+  Criminal damage and arson peaked around May but declined afterwards, while public order offences stayed relatively stable, showing a slight mid-year increase before decreasing again. Though violent crime remained dominant, other categories fluctuated, possibly influenced by seasonal or social factors.
+
+  Overall, crime types follow distinct patterns, and while some declined, others, such as shoplifting, rose later in the year. These trends suggest that crime prevention strategies might need to shift focus depending on the season and crime type.
+
+### Crime Hotspots Analysis
+
+  Analysing crime hotspot areas can help identify locations with exceptionally high crime count, which allow for more focused and efficient preventative measures. It can reveal patterns in when and where crimes occur, which supports proactive police. Understanding these hotspots can allow authorities to develop targeted strategies to reduce crime and improve public safety.
+
+### Bar Plot: Top 10 Crime Hotspots in Colchester (2024)
+
+```{r bar-plot-top_street}
+
+top_street <- crime_clean_dt %>% group_by(street_name) %>% summarise(count = n()) %>% arrange(desc(count)) %>% top_n(10, count)
+
+bp_top_st <- ggplot(top_street, aes(x = reorder(street_name, count), y = count, fill = count)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_viridis( option = "G") +
+  labs(
+    title = "Top 10 Crime Hotspots in Colchester (2024)",
+    x = "Location",
+    y = "Number of Incidents",
+    fill = "Count"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.text = element_text(size = 10)
+  )
+
+bp_top_st
+```
+
+  The bar chart ranks the most frequent crime locations in Colchester for 2024, revealing clear spatial patterns. Supermarkets ranked highest with 505 incidents, indicating their vulnerability to theft and public disturbances. Shopping areas followed closely at 458 incidents, while nightclubs ranked third (207 incidents), likely due to alcohol-related altercations or anti-social behaviour. Interestingly, crime happened near police stations and parking lots (160 or more instances each), probably due to a lack of monitoring. Streets such as George Street and Culver Street West were also identified as hotspots, possibly due to high foot traffic. While shopping and entertainment areas dominated, the presence of a conference centre and St Nicholas Street implied that crime spreads over typical hotspots.
+
+  This data not only highlights the importance of targeted patrols in congested commercial areas, but it also raises concerns regarding environmental design (e.g., lighting, CCTV) in less-monitored regions.
+
+  Finally, the chart shows how urban activities and infrastructure influence crime distribution, guiding resource allocation for the greatest impact.
+
+### Bar plot: Seasonal Patterns in Top 5 Crime Hotspots in Colchester (2024)
+
+```{r seasonal-crime-hotspot-analysis}
+# First, get list of month-year combinations in chronological order
+season_order <- c(  "Winter","Spring","Summer","Autumn"  )
+# Analyzs hotspot by season
+season_hotspot <- crime_clean_dt %>%
+  group_by(season, street_name) %>%
+  summarise(count = n()) %>%
+  ungroup() %>%
+  group_by(season) %>%
+  mutate(
+    season_total = sum(count),
+  ) %>%
+  arrange(factor(season, levels = season_order))
+
+# Create seasonal crime plot
+seasonal_hotspot_plot <- ggplot(
+  season_hotspot %>% filter(street_name %in% top_street$street_name[1:5]),
+  aes(x = factor(season, levels = season_order), y = count, fill = street_name)
+) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_brewer(palette = "Set3") +
+  labs(
+    title = "Seasonal Patterns in Top 5 Crime Hotspots in Colchester (2024)",
+    x = "Season",
+    y = "Number of Crimes",
+    fill = "Location"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0))
+
+seasonal_hotspot_plot
+```
+
+  The chart shows seasonal crime patterns across the top five hotspots in Colchester in 2024. Crimes were consistently highest near supermarkets and shopping areas, especially in autumn and summer. In contrast, areas near police stations and parking areas experienced the fewest crimes, particularly in summer. Although nightclubs saw a drop in spring and summer, their number of crimes spiked again in autumn. While most locations showed an increase in autumn, parking areas remained relatively steady throughout the seasons. The data suggests that certain locations, such as supermarkets and shopping areas, attract more criminal activity regardless of the season, although some seasonal variation is evident.
+
+### Map: Crime Hotspots in Colchester (2024)
+
+```{r spatial-analysis}
+# Create spatial density plot of crimes
+street_hotspots <- crime_clean_dt %>%
+  group_by(street_name) %>%
+  summarise(
+    count = n(),
+    lat = mean(lat),
+    long = mean(long)
+  ) %>%
+  arrange(desc(count)) %>%
+  filter(count > 5)
+
+# Create street-level hotspot map
+street_map <- leaflet(street_hotspots) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~long,
+    lat = ~lat,
+    radius = ~sqrt(count) * 2,
+    color = "red",
+    fillOpacity = 0.7,
+    popup = ~paste("<b>Location:</b>", street_name, "<br>",
+                  "<b>Crime Count:</b>", count)
+  ) %>%
+  setView(lng = mean(street_hotspots$long), 
+          lat = mean(street_hotspots$lat), 
+          zoom = 13)
+
+street_map
+```
+
+  The map visualises crime hotspots within Colchester, utilising red circles to indicate areas where crimes have been reported. The size of each circle corresponds to the number of incidents in that specific location, with larger circles representing a higher concentration of crime. A key interactive feature of this map is the ability to mouse over any red circle to reveal a pop-up display containing specific details about the location and the corresponding crime count for that area.
+
+  The distribution of red circles across the map suggests that there are various places with high crime count. The area surrounding the town centre, to the south and southwest of Castle Park, appears to have a high concentration of crime hotspots. There are further concentrations of reported crimes to the west, near Balkerne Hill, as well as some scattered hotspots in the east and north of the displayed area.
+
+  This visual tool offers several benefits, including the ability to quickly identify high-risk areas, aid in the strategic allocation of law enforcement resources, inform decisions for residents and businesses, facilitate the analysis of crime trends over time, and increase community awareness and engagement in safety measures.
+
+# Conclusion
+
+  This study examined crime patterns in Colchester during 2024 alongside weather data, which reveal relevant trends that can be used to guide policing strategies. Violent crime was the most frequent crime, accounting for 38.4% of all incidents and peaking in July, coinciding with warmer temperatures, suggesting a heat-aggression link. Anti-social behaviour was the second most common crime, increasing in the spring before dropping in the winter, while shoplifting remained stable but increased in late autumn and early winter, most likely due to holiday shopping. Theft-related crimes such as burglary and bicycle theft also rose in colder months, possibly due to reduced daylight and opportunistic theft, whereas vehicle crime peaked in summer, potentially linked to travel and unattended vehicles.
+
+  Weather significantly influenced crime rates. Higher temperatures (r=0.42) and rainfall (r=0.58) correlated with increased crime, possibly due to heightened frustration or reduced visibility. Conversely, stronger winds (r=-0.45) may disrupt criminal opportunities. Crime hotspots were concentrated in commercial and nightlife areas, particularly supermarkets, shopping districts, and streets such as George Street and Culver Street West. Seasonal analysis revealed that crime near supermarkets and retail zones remained consistently high, peaking in summer and autumn, while areas near police stations saw fewer incidents. Nightlife-related crime dipped in spring and summer but resurged in autumn.
+
+  These findings support targeted measures, for instance, increased patrols in retail areas before holidays, enhanced nightlife monitoring in autumn, and improved lighting/CCTV coverage in high-risk zones. A data-driven strategy that considers seasonal trends, weather patterns, and urban activity would optimise crime prevention.
+
+  Finally, future research should explore additional factors such as economic conditions and police visibility to refine these strategies further. By adopting a proactive, evidence-based approach, law enforcement can more effectively enhance public safety in Colchester.
