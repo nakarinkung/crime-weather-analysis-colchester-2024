@@ -35,14 +35,21 @@ This analysis examines:
 
 **Hotspot Locations**
 
-Supermarkets: 505 incidents (highest concentration)
+*Supermarkets*: 505 incidents (highest concentration)
 
-Shopping areas: 458 incidents
+*Shopping areas*: 458 incidents
 
-Nightclubs: 207 incidents
+*Nightclubs*: 207 incidents
 
-Areas near police stations and parking lots
+---
 
+## Installation & Setup
+
+**Prerequisites**
+R (version 4.0+ recommended)
+RStudio
+
+---
 
 ## Required R Packages
 
